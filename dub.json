@@ -1,0 +1,13 @@
+{
+	"authors": [
+		"cet"
+	],
+	"copyright": "Copyright © 2024, cet",
+	"dependencies": {
+		"tern": "~>0.2.26"
+	},
+	"description": "Pipit test suite.",
+	"license": "proprietary",
+	"name": "suite",
+	"targetPath": "bin"
+}

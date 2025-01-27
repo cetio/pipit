@@ -38,7 +38,7 @@ struct Map
 /// @return NULL if the map failed to initialize, otherwise truthy.
 static inline int map_init(struct Map* map)
 {
-    map->head = calloc(BUCKET_SIZE, sizeof(struct _Pair));
+    map->head = (struct _Pair*)calloc(BUCKET_SIZE, sizeof(struct _Pair));
     // The tail will always be the last bucket.
     map->tail = map->head;
 
@@ -65,10 +65,10 @@ static inline __m128i _map_rotbatch(uint32_t key)
 /// @brief Searches a map for a key-value pair with the given key and predicate.
 /// @param key The 32-bit seeding key.
 /// @param predicate Vector of 8 32-bit values to act as a search predicate.
-/// @return Vector containing 4 32-bit round keys.
+/// @return Pointer to the found pair, or null if not found.
 static inline struct _Pair* _map_search(
-    const struct Map* map, 
-    uint32_t key, 
+    const struct Map* map,
+    uint32_t key,
     __m256i predicate)
 {
     struct _Pair* cur = map->head;
@@ -81,14 +81,20 @@ static inline struct _Pair* _map_search(
     {
         __m256i bmp;
         // Populate the first half of the vector with the first bucket we see.
-        for (int i = 0; i < 4; i++)
-            ((uint32_t*)&bmp)[i + 4] = cur[((uint32_t*)&keys)[i]].key;
+        // To clarify, this is not intended to put all entries into a vector,
+        // this merely indexes the pairs based on the keys we generated.
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 0)].key, 4);
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 1)].key, 5);
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 2)].key, 6);
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 3)].key, 7);
         cur = len == 0 ? cur : cur + BUCKET_SIZE;
 
         // Populate the second half of the vector with either the same values or the next bucket.
         // By doing it this way instead of a conditional we are preventing a branch.
-        for (int i = 0; i < 4; i++)
-            ((uint32_t*)&bmp)[i] = cur[((uint32_t*)&keys)[i]].key;
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 0)].key, 0);
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 1)].key, 1);
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 2)].key, 2);
+        bmp = _mm256_insert_epi32(bmp, cur[_mm_extract_epi32(keys, 3)].key, 3);
         cur += BUCKET_SIZE;
 
         // This could be a single _mm256_cmpeq_epi32_mask operation but AVX512 is tricky and generally
@@ -100,12 +106,12 @@ static inline struct _Pair* _map_search(
             struct _Pair* _cur = cur - BUCKET_SIZE;
             // Backtrack to bucket hit.
             _cur = idx <= 3 ? _cur : _cur - BUCKET_SIZE;
-            return _cur + ((uint32_t*)&keys)[idx] % 4;
+            return _cur + ((uint32_t*)&keys)[idx];
         }
 
         len -= 2;
     }
-    
+
     return NULL;
 }
 
@@ -146,14 +152,13 @@ static inline void* map_reset(struct Map* map, uint32_t key)
 /// @param value The entry value to be set for the pair.
 static inline void map_set(struct Map* map, uint32_t key, void* value)
 {
-    //struct _Pair* pair = _map_search(map, key, _mm256_setzero_si256());
-    struct _Pair* pair = NULL;
+    struct _Pair* pair = _map_search(map, key, _mm256_setzero_si256());
     if (pair == NULL)
     {
         size_t size = sizeof(struct _Pair) * ((map->tail - map->head) + BUCKET_SIZE);
 
         map->head = (struct _Pair*)realloc(map->head, size + (sizeof(struct _Pair) * BUCKET_SIZE));
-        map->tail = ((void*)map->head) + size;
+        map->tail = (struct _Pair*)((size_t)map->head + size);
         memset(map->tail, 0, (sizeof(struct _Pair) * BUCKET_SIZE));
 
         map->tail[key % BUCKET_SIZE].key = key;

@@ -15,12 +15,24 @@
 
 #define NUM_TABS 12
 // Limit the size of virtual sequences to 1kB to prevent overstacking.
-#define VSEQ_MAX 1024
+#define SEQ_MAX 1024
 
-struct VSequence
+struct Sequence
 {
-    int kind;
-    // This may only contain VSEQ_MAX number of chars.
+    // 0: addition
+    // 1: deletion
+    // 2: special
+    int kind : 2;
+    // 0: skipped when moving cursor.
+    // 1: registers as only a single character when moving cursor.
+    int value : 1;
+    // This need not be more than 11 bits, but it's 2 spare so why not.
+    int dlen : 13;
+    // Horizontal index of the sequence in the relative column.
+    short index;
+    // Size of text that this replaces, only applicable for addition or special sequences.
+    short slen;
+    // This may only contain SEQ_MAX number of chars.
     char* data;
 };
 
@@ -33,7 +45,7 @@ struct Buffer
     int grow;
     int modified;
     // Virtual buffer containing all unwritten sequences.
-    struct Map virt;
+    struct Sequence seqs[];
 };
 
 static struct termios orig;
@@ -55,12 +67,12 @@ static char* raw;
 // The extra 32 bytes here are to make room for the cursor sequence.
 #define RAW_BUFFER_SIZE cols * rows + 32
 
-void disableRawMode() 
+void disableRawMode()
 {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
 }
 
-void enableRawMode() 
+void enableRawMode()
 {
     tcgetattr(STDIN_FILENO, &orig);
     atexit(disableRawMode);
@@ -72,10 +84,10 @@ void enableRawMode()
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 }
 
-int getBounds(int* rows, int* cols) 
+int getBounds(int* rows, int* cols)
 {
     struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) 
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1)
         return -1;
 
     *rows = ws.ws_row;
@@ -94,7 +106,7 @@ void clearScreen()
     // Set the current rendering position to be after the tab component.
     // This equates to the first character after all pre-rendered rows.
     raw += py * cols;
-    
+
     // TODO: Cache the results of getting all the newlines.
     // TODO: memcpy and strchr to a single loop.
     // TODO: Skip vy number of lines and go forward vx past cols.
@@ -110,7 +122,7 @@ void clearScreen()
         char* tmp = strchr(tbuf, '\n');
         if (tmp == NULL)
         {
-            // We've run out of data to show but we need to finish flushing the rest of the buffer 
+            // We've run out of data to show but we need to finish flushing the rest of the buffer
             // because we need the raw pointer to be at BUFFER_SIZE.
             int rem = (rows - py - i) * cols;
             memset(raw, ' ', rem);
@@ -223,7 +235,7 @@ void up()
         vx = start - pos;
         pos = start;
     }
-    
+
     // Segfault precaution because I'm too lazy to do more fixer-upping.
     if (pos < 0)
         pos--;
@@ -237,7 +249,7 @@ void quit()
     exit(65);
 }
 
-void processKeys() 
+void processKeys()
 {
     char seq[4] = {0, 0, 0, 0};
     int len = read(STDIN_FILENO, seq, 4);
@@ -431,7 +443,7 @@ void bopen(char* path)
         char* ptr = strchr(raw, '\a');
         ptr = ptr == NULL ? raw : ptr;
         int len = ptr - raw;
-        
+
         if (len > 0)
             *ptr++ = ' ';
 
@@ -452,7 +464,7 @@ void bopen(char* path)
         }
 
         *ptr = '\a';
-        
+
         int rem = cols - (len % cols) + 1;
         memset(ptr, ' ', rem);
 
@@ -461,9 +473,9 @@ void bopen(char* path)
     }
 }
 
-int main(int argc, char** argv) 
+int main(int argc, char** argv)
 {
-    if (getBounds(&rows, &cols) == -1) 
+    if (getBounds(&rows, &cols) == -1)
     {
         printf("Failed to get window size.");
         return 0;
@@ -481,7 +493,7 @@ int main(int argc, char** argv)
     {
         if (path != NULL)
             free(path);
-            
+
         path = calloc(PATH_MAX, sizeof(char));
         printf("Failed to comprehend path, enter fallback file or <^C>: ");
         scanf("%s", path);
@@ -496,11 +508,12 @@ int main(int argc, char** argv)
     map_set(&binds, rapidhash("\x1b[B", sizeof("\x1b[B")), &down);
     map_set(&binds, rapidhash("\x1b[C", sizeof("\x1b[C")), &right);
     map_set(&binds, rapidhash("\x18", sizeof("\x18")), &quit);
+    map_set(&binds, rapidhash("^[OQ", sizeof("^[OQ")), &quit);
     //return 0;
 
-    while (1) 
+    while (1)
     {
-        clearScreen();
+        //clearScreen();
         processKeys();
     }
 

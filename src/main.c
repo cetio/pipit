@@ -17,6 +17,7 @@
 // Limit the size of virtual sequences to 1kB to prevent overstacking.
 #define SEQ_MAX 1024
 
+// TODO: Maybe lines structure should be in every buffer and alongside the sequences.
 struct Sequence
 {
     // 0: addition
@@ -38,28 +39,43 @@ struct Sequence
 
 struct Buffer
 {
-    int desc;
+    int handle;
     char* data;
     size_t used;
     size_t free;
     int grow;
-    int modified;
+    int isModified : 1;
+    /// @brief Buffer is pending for new line update.
+    int isPending : 1;
+    // TODO: Consider raw buffers for each buffer?
+    // TODO: Go over this structure and see how I can improve this.
     // Virtual buffer containing all unwritten sequences.
     struct Sequence seqs[];
+};
+
+struct Line
+{
+    int pos;
+    int length;
 };
 
 static struct termios orig;
 static struct Map binds;
 static struct Buffer tabs[NUM_TABS];
 
+/// @brief Index of the currently focused tab.
+static int focus = 0;
 /// @brief Cursor position.
-static int vx = 1, vy = 1;
+static int vx = 0, vy = 0;
 /// @brief Padding dimensions.
-static int px = 1, py = 1;
+static int px = 0, py = 1;
 /// @brief Current index into the rendering buffer.
-static int pos;
+static int pos = 0;
 /// @brief Number of rows and columns present in the current window.
 static int rows, cols;
+/// @brief Line buffer.
+// TODO: Explain the buffers and write it all out to make sure it isn't redundant.
+static struct Line* lines;
 /// @brief Raw rendering buffer.
 static char* raw;
 
@@ -95,150 +111,169 @@ int getBounds(int* rows, int* cols)
     return 0;
 }
 
+// TODO: Be able to check if the file has been externally modified, requires currently mapping to change.
+void updateLineBuffer()
+{
+    // TODO: Other tabs being created will fuck up the raw buffer.
+    // TODO: Do I need tab rendering buffers and a global rendering buffer or something?
+    if (tabs[focus].isPending == 0)
+        return;
+
+    char* tmp = raw;
+    // TODO: Tab selection and possibly make the rendering more compartmentalized?
+    raw += py * cols;
+    int _pos = -1;
+
+    for (int i = 0; i < rows - py; i++)
+    {
+        int sentinel = ++_pos;
+        if (_pos >= tabs[focus].used || tabs[focus].data[_pos] == '\0')
+            break;
+
+        lines[i].pos = sentinel;
+        lines[i].length = 0;
+
+        while (_pos < tabs[focus].used && tabs[focus].data[_pos] != '\n' && tabs[focus].data[_pos] != '\0')
+        {
+            // if (tabs[focus].data[_pos] == '\t')
+            // {
+            //     memcpy(raw, tabs[focus].data + sentinel, _pos - sentinel);
+            //     raw += _pos - sentinel;
+            //     sentinel = _pos + 1;
+            //     // TODO: This doesn't work, these need to be more than just visual also visual stuff needs worked out.
+            // }
+
+            _pos++;
+            lines[i].length++;
+        }
+
+        if (_pos != sentinel)
+            memcpy(raw, tabs[focus].data + sentinel, _pos - sentinel);
+        raw += _pos - sentinel;
+
+        memset(raw, ' ', cols - lines[i].length);
+        raw += cols - lines[i].length;
+    }
+
+    // Alarm doesn't mess with the sequence so it's being used as a placeholder, viable digits replace the alarm characters.
+    strcpy(raw, "\x1b[\a\a\a\a;\a\a\a\aH");
+    raw += 5;
+
+    int row = vy + py + 1;
+    int digits = 0;
+    while (row > 0)
+    {
+        *raw-- = '0' + (row % 10);
+        row /= 10;
+        digits++;
+    }
+
+    raw += digits + 5;
+
+    int col = vx + px + 1;
+    digits = 0;
+    while (col > 0)
+    {
+        *raw-- = '0' + (col % 10);
+        col /= 10;
+        digits++;
+    }
+
+    raw = tmp;
+}
+
 void clearScreen()
 {
     // Clear the screen and return the cursor to home position.
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
 
-    void* rout = raw;
-
-    // Set the current rendering position to be after the tab component.
-    // This equates to the first character after all pre-rendered rows.
-    raw += py * cols;
-
-    // TODO: Cache the results of getting all the newlines.
-    // TODO: memcpy and strchr to a single loop.
-    // TODO: Skip vy number of lines and go forward vx past cols.
-    char* tbuf = tabs[0].data;
-    // Shift down the view by all rows visible when the cursor exits the bounds.
-    // TODO: Implement single-line downshift.
-    int downshift = (vy / rows) * rows;
-    for (int i = ((vy / rows) * rows); i > 1; i--)
-        tbuf = strchr(tbuf, '\n') + 1;
-
-    for (int i = 0; i < rows - py; i++)
-    {
-        char* tmp = strchr(tbuf, '\n');
-        if (tmp == NULL)
-        {
-            // We've run out of data to show but we need to finish flushing the rest of the buffer
-            // because we need the raw pointer to be at BUFFER_SIZE.
-            int rem = (rows - py - i) * cols;
-            memset(raw, ' ', rem);
-            raw += rem;
-            break;
-        }
-
-        int len = tmp - tbuf;
-        memcpy(raw, tbuf, len);
-        // Fill the rest of the data with spaces so it goes to the next line.
-        memset(raw + len, ' ', cols - len);
-
-        tbuf = tmp + 1;
-        raw += cols;
-    }
-
-    *raw++ = '\x1b';  // Escape character
-    *raw++ = '[';     // Start of CSI (Control Sequence Introducer)
-
-    int row = vy + (py * ((downshift / rows) + 1)) - downshift;
-    char buf[4]; // Buffer for digits
-    int num_digits = 0;
-
-    // Convert row to characters and store in buffer
-    do {
-        buf[num_digits++] = '0' + (row % 10);
-        row /= 10;
-    } while (row > 0);
-
-    // Write digits in reverse order (to form the correct number)
-    for (int j = num_digits - 1; j >= 0; j--)
-        *raw++ = buf[j];
-
-    *raw++ = ';'; // Separator between row and column
-
-    // Write vx (column) part of the cursor position
-    num_digits = 0;
-    int col = vx;
-
-    // Convert column to characters and store in buffer
-    do {
-        buf[num_digits++] = '0' + (col % 10);
-        col /= 10;
-    } while (col > 0);
-
-    // Write digits in reverse order
-    for (int j = num_digits - 1; j >= 0; j--)
-        *raw++ = buf[j];
-
-    *raw = 'H';
-
-    write(STDOUT_FILENO, raw = rout, RAW_BUFFER_SIZE);
-}
-
-// TODO: Bounds checking using buffer.
-void left()
-{
-    pos--;
-    vx--;
+    updateLineBuffer();
+    write(STDOUT_FILENO, raw, RAW_BUFFER_SIZE);
 }
 
 void down()
 {
     vy++;
 
-    // TODO: Accomodations for end of file and preventing segfaults.
-    int orig = pos;
-    while (pos < tabs[0].used && tabs[0].data[pos] != '\n')
-        pos++;
-
-    int start = pos++;
-    while (pos < tabs[0].used && tabs[0].data[pos] != '\n')
-        pos++;
-
-    if (pos - start + 1 >= vx)
-        pos = start + vx;
+    if (vx < lines[vy].length)
+        pos = lines[vy].pos + vx;
     else
-        vx = pos - start;
+    {
+        vx = lines[vy].length - 1;
+        pos = lines[vy].pos + lines[vy].length - 1;
+    }
 }
 
 void right()
 {
-    if (tabs[0].data[pos] == '\n')
+    // TODO: There should be some sort of delay before going right causes you to go down.
+    if (vx + 1 >= lines[vy].length)
     {
         down();
         return;
     }
 
-    pos++;
     vx++;
+    pos++;
 }
 
-void up()
+int up()
 {
     vy--;
 
-    // TODO: Accomodations for end of file and preventing segfaults.
-    int orig = pos;
-    while (pos > 0 && tabs[0].data[pos] != '\n')
+    // if (vx <= lines[vy].length)
+    // {
+    //     pos = lines[vy]
+    // }
+    // vy--;
+
+    int tmp = pos;
+    // TODO: sanitizer (this specifically is so you go through all the newlines)
+    while (tmp > 0 && tabs[focus].data[tmp] == '\n')
+        tmp--;
+
+    int ret = pos;
+    while (pos > 0 && tabs[focus].data[pos] != '\n')
         pos--;
 
-    int start = pos--;
-    while (pos > 0 && tabs[0].data[pos] != '\n')
+    int end = pos--;
+    while (pos > 0 && tabs[focus].data[pos] != '\n')
         pos--;
 
-    if (start - pos >= vx)
-        pos += vx - 1;
-    else
+    if (pos < 0)
     {
-        vx = start - pos;
-        pos = start;
+        pos = ret;
+        vy++;
+        return ret;
     }
 
-    // Segfault precaution because I'm too lazy to do more fixer-upping.
-    if (pos < 0)
-        pos--;
+    // TODO: I don't know how to fix this. Go up from blank line and then type and go up again and type.
+    // So many issues...
+    // TODO: Display position in bottom right.
+    int len = end - pos - 1;
+    if (len >= vx)
+        pos += vx;
+    else
+    {
+        pos = end;
+        vx = len;
+    }
+    return ret;
+}
+
+int left()
+{
+    int ret = pos;
+    if (pos == 0)
+        return ret;
+
+    if (tabs[focus].data[pos - 1] == '\n')
+        return up();
+
+    pos--;
+    vx--;
+    return ret;
 }
 
 void quit()
@@ -260,12 +295,15 @@ void processKeys()
     if (seq[0] == 'q')
         quit();
 
+    // TODO: I feel like there MUST be something I'm missing. Review rendering stuff later.
+    tabs[focus].isPending = -1;
+
     void (*func)(void);
     if ((func = map_get(&binds, rapidhash(seq, 4))))
         func();
     else
     {
-        //tabs[0].data[pos] = seq[0];
+        //tabs[focus].data[pos] = seq[0];
         right();
     }
 }
@@ -417,17 +455,21 @@ int validate_safe(char** path)
     return validate(*path);
 }
 
+// TODO: Hashtag in the test script keeps being replaced with 2 tabs. Investigate when the buffer is being changed.
 void bopen(char* path)
 {
     struct Buffer buf = {
         .grow = 64,
         .free = 64,
-        .modified = 0
+        .isModified = 0,
+        .isPending = -1
     };
     // TODO: Error handling.
-    buf.desc = open(path, O_RDWR);
-    buf.used = lseek(buf.desc, 0, SEEK_END);
-    buf.data = mmap(NULL, buf.used, PROT_READ | PROT_WRITE, MAP_SHARED, buf.desc, 0);
+    buf.handle = open(path, O_RDWR);
+    buf.used = lseek(buf.handle, 0, SEEK_END);
+    // TODO: This is a raw buffer and should be discarded if changes aren't saved.
+    // TODO: Ideally we shouldn't take exclusive access of the file but I haven't yet figured out an alternative.
+    buf.data = mmap(NULL, buf.used, PROT_READ | PROT_WRITE, MAP_SHARED, buf.handle, 0);
 
     char* name = strrchr(path, '/');
     if (name != path)
@@ -457,7 +499,7 @@ void bopen(char* path)
             len++;
         }
 
-        if (tabs[i].modified)
+        if (tabs[i].isModified)
         {
             *ptr++ = '*';
             len++;
@@ -482,11 +524,19 @@ int main(int argc, char** argv)
     }
 
     if (RAW_BUFFER_SIZE <= 1024 * 1024)
+    {
         raw = alloca(RAW_BUFFER_SIZE);
+        // TODO: Technically this won't work and it needs to be 8 times bigger because every character could be a newline.
+        lines = alloca(RAW_BUFFER_SIZE);
+    }
     else
+    {
         raw = malloc(RAW_BUFFER_SIZE);
+        lines = malloc(RAW_BUFFER_SIZE);
+    }
 
     memset(raw, 0, RAW_BUFFER_SIZE);
+    // No need to zero line buffer because it should never be used before lines are updated at least once.
 
     char* path = argc >= 2 ? argv[1] : NULL;
     while (validate_safe(&path) != 0)
@@ -513,7 +563,7 @@ int main(int argc, char** argv)
 
     while (1)
     {
-        //clearScreen();
+        clearScreen();
         processKeys();
     }
 

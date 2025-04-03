@@ -76,6 +76,8 @@ static int rows, cols;
 /// @brief Line buffer.
 // TODO: Explain the buffers and write it all out to make sure it isn't redundant.
 static struct Line* lines;
+/// @brief Number of lines in line buffer.
+static int numLines;
 /// @brief Raw rendering buffer.
 static char* raw;
 
@@ -123,6 +125,7 @@ void updateLineBuffer()
     // TODO: Tab selection and possibly make the rendering more compartmentalized?
     raw += py * cols;
     int _pos = -1;
+    numLines = rows - py;
 
     for (int i = 0; i < rows - py; i++)
     {
@@ -160,6 +163,7 @@ void updateLineBuffer()
     raw += 5;
 
     int row = vy + py + 1;
+    int col = vx + px + 1;
     int digits = 0;
     while (row > 0)
     {
@@ -170,7 +174,6 @@ void updateLineBuffer()
 
     raw += digits + 5;
 
-    int col = vx + px + 1;
     digits = 0;
     while (col > 0)
     {
@@ -194,22 +197,25 @@ void clearScreen()
 
 void down()
 {
-    vy++;
+    if (vy + 1 >= numLines)
+        return;
 
+    vy++;
     if (vx < lines[vy].length)
         pos = lines[vy].pos + vx;
     else
     {
-        vx = lines[vy].length - 1;
+        vx = lines[vy].length > 0 ? lines[vy].length - 1 : 0;
         pos = lines[vy].pos + lines[vy].length - 1;
     }
 }
 
 void right()
 {
-    // TODO: There should be some sort of delay before going right causes you to go down.
     if (vx + 1 >= lines[vy].length)
     {
+        if (vy + 1 < numLines)
+            vx = lines[vy + 1].length;
         down();
         return;
     }
@@ -218,62 +224,33 @@ void right()
     pos++;
 }
 
-int up()
+void up()
 {
+    if (vy - 1 < 0)
+            return;
+
     vy--;
-
-    // if (vx <= lines[vy].length)
-    // {
-    //     pos = lines[vy]
-    // }
-    // vy--;
-
-    int tmp = pos;
-    // TODO: sanitizer (this specifically is so you go through all the newlines)
-    while (tmp > 0 && tabs[focus].data[tmp] == '\n')
-        tmp--;
-
-    int ret = pos;
-    while (pos > 0 && tabs[focus].data[pos] != '\n')
-        pos--;
-
-    int end = pos--;
-    while (pos > 0 && tabs[focus].data[pos] != '\n')
-        pos--;
-
-    if (pos < 0)
-    {
-        pos = ret;
-        vy++;
-        return ret;
-    }
-
-    // TODO: I don't know how to fix this. Go up from blank line and then type and go up again and type.
-    // So many issues...
-    // TODO: Display position in bottom right.
-    int len = end - pos - 1;
-    if (len >= vx)
-        pos += vx;
+    if (vx < lines[vy].length)
+        pos = lines[vy].pos + vx;
     else
     {
-        pos = end;
-        vx = len;
+        vx = lines[vy].length > 0 ? lines[vy].length - 1 : 0;
+        pos = lines[vy].pos + lines[vy].length - 1;
     }
-    return ret;
 }
 
-int left()
+void left()
 {
-    int ret = pos;
-    if (pos == 0)
-        return ret;
+    if (vx - 1 < 0)
+    {
+        if (vy - 1 < numLines)
+            vx = lines[vy - 1].length;
+        up();
+        return;
+    }
 
-    if (tabs[focus].data[pos - 1] == '\n')
-        return up();
-
-    pos--;
     vx--;
-    return ret;
+    pos--;
 }
 
 void quit()
@@ -549,6 +526,7 @@ int main(int argc, char** argv)
         scanf("%s", path);
     }
 
+    // TODO: This looks gross, I mix camelcase and snakecase and lowercase.
     enableRawMode();
     bopen(path);
     map_init(&binds);

@@ -432,8 +432,7 @@ int validate_safe(char** path)
     return validate(*path);
 }
 
-// TODO: Hashtag in the test script keeps being replaced with 2 tabs. Investigate when the buffer is being changed.
-void bopen(char* path)
+void buffer_open(char* path)
 {
     struct Buffer buf = {
         .grow = 64,
@@ -528,7 +527,7 @@ int main(int argc, char** argv)
 
     // TODO: This looks gross, I mix camelcase and snakecase and lowercase.
     enableRawMode();
-    bopen(path);
+    buffer_open(path);
     map_init(&binds);
 
     map_set(&binds, rapidhash("\x1b[A", sizeof("\x1b[A")), &up);

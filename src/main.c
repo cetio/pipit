@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include "rapidhash.h"
+#include "mzalloc.h"
 
 #define NUM_TABS 12
 // Limit the size of virtual sequences to 1kB to prevent overstacking.
@@ -493,6 +494,10 @@ void buffer_open(char* path)
 
 int main(int argc, char** argv)
 {
+    printf("%Ix\n", mzalloc(32));
+    printf("%Ix\n", mzalloc(32));
+    printf("%Ix\n", mzalloc(32));
+
     if (getBounds(&rows, &cols) == -1)
     {
         printf("Failed to get window size.");

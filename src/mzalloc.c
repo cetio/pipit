@@ -38,6 +38,7 @@ struct Slab* slab_init()
 
 void* small_lookup(struct Slab* slab, int shard)
 {
+    printf("%d\n", shard);
     return (void*)slab + sizeof(struct Slab) + (shard * SMALL_SHARD_SIZE);
 }
 
@@ -57,8 +58,7 @@ void* mzalloc_small(size_t size)
         int shard = -1;
         for (int i = 0; i < SMALL_CLUSTERS; i++)
         {
-            int res = bmp_recode(cur->small + i, size / SMALL_SHARD_SIZE);
-            //int res = bmp_recode(*(cur->small + i), size / SMALL_SHARD_SIZE);
+            int res = bmp_recode(cur->small + i, (size + (SMALL_SHARD_SIZE - (size % SMALL_SHARD_SIZE))) / SMALL_SHARD_SIZE);
             shard = res == -1 ? shard : res;
         }
 
@@ -66,7 +66,10 @@ void* mzalloc_small(size_t size)
         {
             // TODO: Improve processing here?
             if (cur->next == NULL)
+            {
+                printf("new slab\n");
                 cur->next = slab_init();
+            }
 
             cur = cur->next;
             continue;
@@ -90,8 +93,7 @@ void* mzalloc_large(size_t size)
         for (int i = 0; i < LARGE_CLUSTERS; i++)
         {
             // TODO: This seems to be working fine but I need to make sure.
-            int res = bmp_recode(cur->large + i, size / LARGE_SHARD_SIZE);
-            //int res = bmp_recode(*(cur->large + i), size / LARGE_SHARD_SIZE);
+            int res = bmp_recode(cur->large + i, (size + (LARGE_SHARD_SIZE - (size % LARGE_SHARD_SIZE))) / LARGE_SHARD_SIZE);
             shard = res == -1 ? shard : res;
         }
 

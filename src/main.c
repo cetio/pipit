@@ -496,7 +496,8 @@ int main(int argc, char** argv)
 {
     printf("%Ix\n", mzalloc(32));
     printf("%Ix\n", mzalloc(32));
-    printf("%Ix\n", mzalloc(32));
+    //printf("%Ix\n", mzalloc(32));
+    return 1;
 
     if (getBounds(&rows, &cols) == -1)
     {

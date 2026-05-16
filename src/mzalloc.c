@@ -5,15 +5,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SLAB_SIZE 1024 * 1024 * 4
 #define LARGE_SHARD_SIZE 256
-#define LARGE_SHARD_SEC 1024 * 1024
+#define LARGE_SHARD_SEC (1024 * 1024)
 #define SMALL_SHARD_SIZE 48
-#define SMALL_SHARD_SEC 1024 * 1024 * 3
-#define LARGE_CLUSTERS LARGE_SHARD_SEC / (256 * LARGE_SHARD_SIZE)
-#define SMALL_CLUSTERS SMALL_SHARD_SEC / (256 * SMALL_SHARD_SIZE)
-#define ARBITRAGE (LARGE_CLUSTERS + SMALL_CLUSTERS) / 2
-#define METADATA ((LARGE_CLUSTERS + SMALL_CLUSTERS) * 32) + ARBITRAGE
+#define SMALL_SHARD_SEC (1024 * 1024 * 3)
+#define LARGE_CLUSTERS (LARGE_SHARD_SEC / (256 * LARGE_SHARD_SIZE))
+#define SMALL_CLUSTERS (SMALL_SHARD_SEC / (256 * SMALL_SHARD_SIZE))
+#define ARBITRAGE ((LARGE_CLUSTERS + SMALL_CLUSTERS) / 2)
+
+#define SLAB_SIZE (sizeof(struct Slab) + (size_t)SMALL_CLUSTERS * 256 * SMALL_SHARD_SIZE + (size_t)LARGE_CLUSTERS * 256 * LARGE_SHARD_SIZE)
 
 static struct Slab* slab;
 
@@ -29,107 +29,113 @@ struct Slab
 
 struct Slab* slab_init()
 {
-    void* ptr = mmap(NULL, SLAB_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    ptr += 32 - ((size_t)ptr % 32);
-    memset(ptr, 255, METADATA);
-    memset(ptr + METADATA, 0, sizeof(struct Slab) - METADATA);
-    return (struct Slab*)ptr;
+    void* raw = mmap(NULL, SLAB_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED)
+        return NULL;
+
+    struct Slab* ptr = (struct Slab*)(((uintptr_t)raw + 31) & ~31);
+    size_t bitmapBytes = (LARGE_CLUSTERS + SMALL_CLUSTERS) * sizeof(__m256i);
+    memset(ptr, 255, bitmapBytes);
+    memset((char*)ptr + bitmapBytes, 0, sizeof(struct Slab) - bitmapBytes);
+    return ptr;
 }
 
 int shard_lookup(void* ptr)
 {
     // TODO:
+    return -1;
 }
 
 void* small_lookup(struct Slab* slab, int shard)
 {
-    return (void*)slab + sizeof(struct Slab) + (shard * SMALL_SHARD_SIZE);
+    return (char*)slab + sizeof(struct Slab) + ((size_t)shard * SMALL_SHARD_SIZE);
 }
 
 void* large_lookup(struct Slab* slab, int shard)
 {
-    return (void*)slab + sizeof(struct Slab) + (SMALL_CLUSTERS * SMALL_SHARD_SIZE) + (shard * LARGE_SHARD_SIZE);
-}
-
-void arbitrage_set(struct Slab* slab, int shard, int len)
-{
-    if (len < 2)
-        return;
-
-    void* ptr = (void*)slab + sizeof(struct Slab) + (SMALL_CLUSTERS * SMALL_SHARD_SIZE) +
-        (LARGE_CLUSTERS * LARGE_SHARD_SIZE) + (256 * ((shard / 2) / 256));
-    bmp_set(ptr, (shard / 2) + 1, len / 2);
-    111110111
-
+    return (char*)slab + sizeof(struct Slab) + ((size_t)SMALL_CLUSTERS * 256 * SMALL_SHARD_SIZE) + ((size_t)shard * LARGE_SHARD_SIZE);
 }
 
 void* mzalloc_small(size_t size)
 {
     if (slab == NULL)
+    {
         slab = slab_init();
+        if (slab == NULL)
+            return NULL;
+    }
 
+    int len = (size + SMALL_SHARD_SIZE - 1) / SMALL_SHARD_SIZE;
     struct Slab* cur = slab;
-    int len = (size + (LARGE_SHARD_SIZE - (size % LARGE_SHARD_SIZE))) / LARGE_SHARD_SIZE;
     while (1)
     {
         int shard = -1;
         for (int i = 0; i < SMALL_CLUSTERS; i++)
         {
             int res = bmp_recode(cur->small + i, len);
-            shard = res == -1 ? shard : res;
+            if (res != -1)
+            {
+                shard = i * 256 + res;
+                break;
+            }
         }
 
         if (shard == -1)
         {
-            // TODO: Improve processing here?
             if (cur->next == NULL)
             {
-                //printf("new slab\n");
                 cur->next = slab_init();
+                if (cur->next == NULL)
+                    return NULL;
             }
 
             cur = cur->next;
             continue;
         }
 
-        //arbitrage_set(cur, shard, len);
         return small_lookup(cur, shard);
     }
-
-    return NULL;
 }
 
 void* mzalloc_large(size_t size)
 {
     if (slab == NULL)
+    {
         slab = slab_init();
+        if (slab == NULL)
+            return NULL;
+    }
 
+    int len = (size + LARGE_SHARD_SIZE - 1) / LARGE_SHARD_SIZE;
     struct Slab* cur = slab;
-    int len = (size + (LARGE_SHARD_SIZE - (size % LARGE_SHARD_SIZE))) / LARGE_SHARD_SIZE;
     while (1)
     {
         int shard = -1;
         for (int i = 0; i < LARGE_CLUSTERS; i++)
         {
             int res = bmp_recode(cur->large + i, len);
-            shard = res == -1 ? shard : res;
+            if (res != -1)
+            {
+                shard = i * 256 + res;
+                break;
+            }
         }
 
         if (shard == -1)
         {
-            // TODO: Improve processing here?
             if (cur->next == NULL)
+            {
                 cur->next = slab_init();
+                if (cur->next == NULL)
+                    return NULL;
+            }
 
             cur = cur->next;
             continue;
         }
 
-        //arbitrage_set(cur, shard, len);
         return large_lookup(cur, shard);
     }
-
-    return NULL;
 }
 
 void* mzalloc(size_t size)
